@@ -1,13 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { Resend } from 'resend';
-import { ManualPayment } from 'src/billing/entities/manual-payment.entity';
 
 @Injectable()
 export class MailService {
   private resend = new Resend(process.env.RESEND_API_KEY);
 
   async sendVerificationEmail(email: string, token: string) {
-    const verificationUrl = `http://localhost:3001/auth/verify?token=${token}`;
+    const verificationUrl = process.env.BACKEND_URL+`/auth/verify?token=${token}`;
     const htmlTemplate = this.buildVerificationTemplate(verificationUrl);
 
     await this.resend.emails.send({
