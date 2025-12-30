@@ -100,7 +100,7 @@ export class ClientesController {
     console.log('✅ Archivos guardados en carpeta RFC:', clienteFolder);
 
     const userId = req.user?.sub;  // <<--- EL ID REAL DEL JWT
-    const userType = req.user.type;
+    const userType = req.user?.type;
   
     return this.clientesService.create(createClienteDto, userId, userType);
   }
@@ -271,6 +271,53 @@ export class ClientesController {
       keyFile: files.key[0],
       fielPass,
       rfc,
+    });
+  }
+
+  @Post('update-own-certificates')
+  @UseGuards(new RateLimitGuard(50, 60000), VerifiedGuard, RolesGuard)
+  @Roles('owner')
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'cer', maxCount: 1 },
+        { name: 'key', maxCount: 1 },
+      ],
+      {
+        storage: diskStorage({
+          destination: './uploads/temp',
+          filename: (req, file, cb) => {
+            const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+            cb(null, `${file.fieldname}-${unique}${extname(file.originalname)}`);
+          },
+        }),
+      },
+    ),
+  )
+  async updateOwnCertificates(
+    @Req() req: AuthRequest,
+    @UploadedFiles()
+    files: {
+      cer?: Express.Multer.File[];
+      key?: Express.Multer.File[];
+    },
+    @Body('fielPass') fielPass: string,
+  ) {
+    const userId = req.user.sub;
+  
+    if (!files?.cer?.length || !files?.key?.length) {
+      throw new BadRequestException('Debes subir archivo .cer y .key');
+    }
+  
+    if (!fielPass?.trim()) {
+      throw new BadRequestException('La contraseña FIEL es requerida');
+    }
+  
+    return this.clientesService.updateOwnCertificates({
+      userId,
+      cerFile: files.cer[0],
+      keyFile: files.key[0],
+      fielPass,
     });
   }
 

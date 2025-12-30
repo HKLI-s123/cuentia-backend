@@ -64,13 +64,6 @@ export class AuthService {
         'Debes aceptar los términos y condiciones para continuar'
       );
     }
-    // === reCAPTCHA ====================================================
-    if (!dto.recaptchaToken)
-      throw new BadRequestException('Captcha requerido');
-
-    const ok = await this.recaptchaService.verifyToken(dto.recaptchaToken);
-    if (!ok) throw new BadRequestException('Fallo captcha');
-
     // === Validación extra del tipo_cuenta ============================
     const tiposValidos = ['individual', 'empresarial', 'invitado'];
     if (!tiposValidos.includes(dto.tipo_cuenta)) {

@@ -11,15 +11,19 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { User } from 'src/users/entities/user.entity';
 import { BillingFeaturesService } from 'src/billing/billing-features.service';
-import { NotificationService } from 'src/notifications/notification.service';
+import { Cfdi } from 'src/cfdi/entities/cfdi.entity';
 
 export const PLAN_LIMITS = {
-  cuentia_trial: { rfcs: 1 },
+  cuentia_trial: { rfcs: 10 },
   cuentia_plan_individual: { rfcs: 5 },
   cuentia_plan_profesional: { rfcs: 10 },
   cuentia_plan_empresarial: { rfcs: 50 },
   cuentia_plan_despacho: { rfcs: 300 },
 };
+
+const now = new Date();
+const startOfYear = new Date(now.getFullYear(), 0, 1); // 1 enero
+const endOfYear = new Date(now.getFullYear(), 11, 31, 23, 59, 59); // 31 dic
 
 
 @Injectable()
@@ -37,6 +41,9 @@ export class ClientesService {
     @InjectRepository(EmployeeRfcAccess)
     private readonly rfcAccessRepo : Repository<EmployeeRfcAccess>,
 
+    @InjectRepository(Cfdi)
+    private readonly cfdisRepo: Repository<Cfdi>,
+
     private readonly usersService: UsersService,
 
     private readonly billingFeaturesService: BillingFeaturesService,
@@ -46,11 +53,13 @@ export class ClientesService {
     const planInfo = await this.billingFeaturesService.getActivePlan(userId);
   
     const plan = planInfo.plan ?? "cuentia_trial";
-    const limit = PLAN_LIMITS[plan]?.rfcs ?? 1;
+    const limit = PLAN_LIMITS[plan]?.rfcs ?? 10;
   
     const current = await this.clientesRepo.count({
       where: { user_id_relacionado: userId },
     });
+
+    console.log(limit);
   
     if (current >= limit) {
       throw new ForbiddenException(
@@ -266,12 +275,30 @@ export class ClientesService {
            rfc: In(allowedRfcs),
          },
        });
+
+      // 🔥 CONTAR CFDIs POR RFC (UNA SOLA CONSULTA)
+      const cfdisCount = await this.cfdisRepo
+        .createQueryBuilder('c')
+        .select('c.rfc_relacionado', 'rfc')
+        .addSelect('COUNT(*)', 'total')
+        .where('c.rfc_relacionado IN (:...rfcs)', { rfcs: allowedRfcs })
+        .andWhere('c.fecha BETWEEN :start AND :end', {
+          start: startOfYear,
+          end: endOfYear,
+        })
+        .groupBy('c.rfc_relacionado')
+        .getRawMany();
+  
+      const cfdiMap = Object.fromEntries(
+        cfdisCount.map(row => [row.rfc, Number(row.total)])
+      );
      
        // ➕ Agregar key_url y cer_url igual que para empresarios
        const BACKEND_URL = 'http://localhost:3001';
      
        return clientes.map(c => ({
          ...c,
+         cfdis: cfdiMap[c.rfc] ?? 0,
          key_url: c.key_path ? `${BACKEND_URL}${c.key_path}` : undefined,
          cer_url: c.cer_path ? `${BACKEND_URL}${c.cer_path}` : undefined,
        }));
@@ -287,9 +314,30 @@ export class ClientesService {
 
     const BACKEND_URL = 'http://localhost:3001'; // ajusta si tu backend está en otro host/puerto
     const clientes = await this.clientesRepo.find({where: { user_id_relacionado: userId },});
+
+    const rfcs = clientes.map(c => c.rfc);
+    if (rfcs.length === 0) return [];
+    
+    // 🔥 CONTAR CFDIs POR RFC
+    const cfdisCount = await this.cfdisRepo
+      .createQueryBuilder('c')
+      .select('c.rfc_relacionado', 'rfc')
+      .addSelect('COUNT(*)', 'total')
+      .where('c.rfc_relacionado IN (:...rfcs)', { rfcs })
+      .andWhere('c.fecha BETWEEN :start AND :end', {
+        start: startOfYear,
+        end: endOfYear,
+      })
+      .groupBy('c.rfc_relacionado')
+      .getRawMany();
+  
+    const cfdiMap = Object.fromEntries(
+      cfdisCount.map(row => [row.rfc, Number(row.total)])
+    );
   
     return clientes.map(c => ({
       ...c,
+      cfdis: cfdiMap[c.rfc] ?? 0,
       key_url: c.key_path ? `${BACKEND_URL}${c.key_path}` : undefined,
       cer_url: c.cer_path ? `${BACKEND_URL}${c.cer_path}` : undefined,
     }));
@@ -518,6 +566,107 @@ export class ClientesService {
       createdAt: clienteYo.lastCertificatesUpdate,
     };
   }
+
+  async updateOwnCertificates(data: {
+    userId: number;
+    cerFile: Express.Multer.File;
+    keyFile: Express.Multer.File;
+    fielPass: string;
+  }) {
+    const { userId, cerFile, keyFile, fielPass } = data;
+  
+    // 1️⃣ Usuario
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Usuario no encontrado');
+  
+    // 2️⃣ Validaciones duras
+    if (user.tipo_cuenta === 'invitado') {
+      throw new BadRequestException('Las cuentas invitado no pueden usar FIEL');
+    }
+  
+    if (!user.propioRfc) {
+      throw new BadRequestException(
+        'No existe un RFC propio registrado. Completa el onboarding primero.'
+      );
+    }
+  
+    const rfc = user.propioRfc;
+  
+    // 3️⃣ Buscar SOLO el cliente propio
+    let clienteYo = await this.clientesRepo.findOne({
+      where: {
+        user_id_relacionado: userId,
+        rfc,
+      },
+    });
+  
+    // 4️⃣ Rate limit de actualización (24h)
+    if (clienteYo?.lastCertificatesUpdate) {
+      const diffHours =
+        (Date.now() - new Date(clienteYo.lastCertificatesUpdate).getTime()) /
+        (1000 * 60 * 60);
+  
+      if (diffHours < 24) {
+        const horasRestantes = (24 - diffHours).toFixed(1);
+        throw new BadRequestException(
+          `Solo puedes actualizar tus certificados una vez al día. Intenta nuevamente en ${horasRestantes} horas.`
+        );
+      }
+    }
+  
+    // 5️⃣ Crear carpeta del RFC propio
+    const folder = join('./uploads/own-firma', rfc);
+    await fs.mkdir(folder, { recursive: true });
+  
+    // 6️⃣ Limpiar archivos anteriores
+    try {
+      const oldFiles = await fs.readdir(folder);
+      for (const f of oldFiles) {
+        await fs.unlink(join(folder, f));
+      }
+    } catch {}
+  
+    // 7️⃣ Mover archivos nuevos
+    const newCerPath = join(folder, cerFile.filename);
+    const newKeyPath = join(folder, keyFile.filename);
+  
+    await fs.rename(cerFile.path, newCerPath);
+    await fs.rename(keyFile.path, newKeyPath);
+  
+    // 8️⃣ Guardar contraseña FIEL
+    const cleanPass = fielPass.replace(/\s+/g, '');
+    await fs.writeFile(join(folder, 'fiel.txt'), cleanPass, 'utf-8');
+  
+    // 9️⃣ Crear o actualizar cliente “Yo”
+    if (clienteYo) {
+      clienteYo.key_path = '/' + newKeyPath.replace(/\\/g, '/');
+      clienteYo.cer_path = '/' + newCerPath.replace(/\\/g, '/');
+      clienteYo.fiel = cleanPass;
+      clienteYo.lastCertificatesUpdate = new Date();
+  
+      await this.clientesRepo.save(clienteYo);
+    } else {
+      clienteYo = this.clientesRepo.create({
+        nombre: 'Yo',
+        rfc,
+        user_id_relacionado: userId,
+        key_path: '/' + newKeyPath.replace(/\\/g, '/'),
+        cer_path: '/' + newCerPath.replace(/\\/g, '/'),
+        fiel: cleanPass,
+        lastCertificatesUpdate: new Date(),
+      });
+  
+      await this.clientesRepo.save(clienteYo);
+    }
+  
+    return {
+      message: 'Certificados propios actualizados correctamente',
+      rfc,
+      clienteId: clienteYo.id,
+      updatedAt: clienteYo.lastCertificatesUpdate,
+    };
+  }
+
 
   async pauseSync(userId: number, rfc: string) {
     const cliente = await this.clientesRepo.findOne({

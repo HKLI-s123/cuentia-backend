@@ -12,11 +12,12 @@ import { BillingFeaturesService } from 'src/billing/billing-features.service';
 import { BillingSubscription } from 'src/billing-payment/entities/billing-subscriptions.entity';
 import { BillingSubscriptionItem } from 'src/billing-payment/entities/billing-subscription-items.entity';
 import { BillingInvoiceStripe } from 'src/billing-payment/entities/billing-invoice-stripe.entity';
+import { Cfdi } from 'src/cfdi/entities/cfdi.entity';
 
 @Module({
   imports: [
     UsersModule,
-    TypeOrmModule.forFeature([Cliente, User, EmployeeRfcAccess, EmployeeUser, BillingSubscription, BillingSubscriptionItem, BillingInvoiceStripe]),
+    TypeOrmModule.forFeature([Cliente, User, EmployeeRfcAccess, EmployeeUser, BillingSubscription, BillingSubscriptionItem, BillingInvoiceStripe, Cfdi]),
     MulterModule.register({
       dest: './uploads/clientes', 
     }),
