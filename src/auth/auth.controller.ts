@@ -42,6 +42,10 @@ export class AuthController {
    @Res({ passthrough: true }) res: Response
   ) {
 
+    if (!body.recaptchaToken) {
+      throw new BadRequestException('Falta token de reCAPTCHA');
+    }
+
     const result = await this.authService.register(body);
 
      // ⛔ No enviar refreshToken al front
