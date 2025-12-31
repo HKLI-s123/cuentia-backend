@@ -235,13 +235,6 @@ export class AuthService {
     if (!user) {
       throw new BadRequestException("Usuario no encontrado");
     }
-  
-    // 🚫 Bloquear invitados
-    if (user.tipo_cuenta === "invitado") {
-      return; // silencioso, no error (mejor UX)
-      // o si prefieres:
-      // throw new BadRequestException("Las cuentas invitado no tienen prueba gratuita");
-    }
 
     const existing = await this.subscriptionRepo.findOne({
       where: { userId },

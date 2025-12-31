@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import { ClientSession } from './entities/client-session.entity';
 import { ClientQrLog } from './entities/client-qr-log.entity';
-import { Repository, MoreThan } from 'typeorm';
+import { Repository, MoreThan, In } from 'typeorm';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as qrcode from 'qrcode';
@@ -52,6 +52,26 @@ import { BillingSubscription } from 'src/billing-payment/entities/billing-subscr
 //
 //  return num;
 //}
+
+const USABLE_SUBSCRIPTION_STATUSES = [
+  'free',
+  'trialing',
+  'active',
+  'past_due',
+];
+
+const INVITED_ALLOWED_PLANS: Record<string, string[]> = {
+  cuentia_bot_gastos: [
+    'cuentia_bot_gastos',
+    'cuentia_start_bots_2',
+    'cuentia_trial',
+  ],
+  cuentia_bot_comprobantes: [
+    'cuentia_bot_comprobantes',
+    'cuentia_start_bots_2',
+    'cuentia_trial',
+  ],
+};
 
 @Injectable()
 export class WhatsappService {
@@ -133,7 +153,7 @@ export class WhatsappService {
   
     // 🔍 Buscar suscripción activa
     const sub = await this.subscriptionRepo.findOne({
-      where: { userId, status: 'active' },
+      where: { userId, status: In(USABLE_SUBSCRIPTION_STATUSES),},
       order: { createdAt: 'DESC' },
     });
   
@@ -143,9 +163,12 @@ export class WhatsappService {
   
     const isManualPayment = sub.stripeSubscriptionId === 'manual_payment';
   
-    // 🟣 INVITADO → el bot es el plan
+
+    // 🟣 INVITADO → bots como plan
     if (user.tipo_cuenta === 'invitado') {
-      if (sub.planProductId !== billingBotCode) {
+      const allowedPlans = INVITED_ALLOWED_PLANS[billingBotCode];
+  
+      if (!allowedPlans.includes(sub.planProductId || "")) {
         throw new ForbiddenException('Este bot no está contratado');
       }
   
@@ -159,6 +182,11 @@ export class WhatsappService {
       );
     }
   
+    // ✅ TRIAL → bots incluidos
+    if (sub.status === 'trialing') {
+      return true;
+    }
+
     const item = await this.itemRepo.findOne({
       where: {
         billingSubscriptionId: sub.id,
